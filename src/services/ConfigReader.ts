@@ -1,27 +1,72 @@
 /**
  * ConfigReader service.
  *
- * Loads on-disk JSON config files from well-known paths.
+ * Reads the on-disk JSON config files used by the extension. Lives on
+ * top of FileSystem so the Test layer for ConfigReader is just an
+ * InMemoryFileSystem with the right files seeded.
  *
  * Replaces:
- *   - index.ts:loadConfig (~/.pi/agent/extensions/subagent/config.json)
- *   - intercom-bridge.ts:resolveIntercomBridge (intercom config)
- *   - settings.ts paths (~/.pi/agent/settings.json, .pi/settings.json)
+ *   - index.ts:loadConfig (the legacy path is hard-coded to
+ *     ~/.pi/agent/extensions/subagent/config.json with try/catch
+ *     swallowing all errors).
+ *   - the on-disk-load half of intercom-bridge.ts.
  *
- * Live : depends on FileSystem (so the test layer just stubs FileSystem).
- * Test : returns frozen config objects.
+ * Failure semantics:
+ *   - Missing file -> Effect.succeed({}). The legacy code treated
+ *     "no config" as "all defaults", which is the right behavior;
+ *     we surface it as a successful empty value rather than
+ *     FsNotFound so callers don't have to catch it.
+ *   - Malformed JSON -> ConfigParseError. The legacy code logged to
+ *     console and returned {}; we propagate the error and let the
+ *     adapter map it to a user-visible message. This is a behavior
+ *     change, called out in the migration plan as a deliberate
+ *     tightening.
  */
+import * as os from "node:os";
+import * as path from "node:path";
 import { Context, Effect, Layer } from "effect";
-import type { ConfigParseError } from "../errors.ts";
+import { ConfigParseError } from "../errors.ts";
+import { FileSystem } from "./FileSystem.ts";
 
-/** Mirrors types.ts:ExtensionConfig — to be replaced by Schema-decoded value in Phase 2. */
+// ============================================================================
+// Path constants (mirror the legacy hard-coded paths)
+// ============================================================================
+
+export const EXTENSION_CONFIG_PATH = path.join(
+	os.homedir(),
+	".pi",
+	"agent",
+	"extensions",
+	"subagent",
+	"config.json",
+);
+
+export const INTERCOM_CONFIG_PATH = path.join(
+	os.homedir(),
+	".pi",
+	"agent",
+	"intercom",
+	"config.json",
+);
+
+// ============================================================================
+// Decoded shapes (kept as plain interfaces here; Schema decoding moves
+// in once Phase 11 wires the typebox-bridge — for now ConfigReader's
+// job is just JSON parse + tilde expansion).
+// ============================================================================
+
+export interface IntercomBridgeConfig {
+	readonly mode?: "off" | "fork-only" | "always";
+	readonly instructionFile?: string;
+}
+
 export interface ExtensionConfig {
 	readonly asyncByDefault?: boolean;
 	readonly defaultSessionDir?: string;
 	readonly maxSubagentDepth?: number;
 	readonly worktreeSetupHook?: string;
 	readonly worktreeSetupHookTimeoutMs?: number;
-	readonly intercomBridge?: unknown;
+	readonly intercomBridge?: IntercomBridgeConfig;
 }
 
 export interface ConfigReaderService {
@@ -29,16 +74,67 @@ export interface ConfigReaderService {
 	readonly loadIntercomConfig: Effect.Effect<unknown, ConfigParseError>;
 }
 
-export class ConfigReader extends Context.Service<ConfigReader, ConfigReaderService>()("pi-subagents/ConfigReader") {}
+export class ConfigReader extends Context.Service<ConfigReader, ConfigReaderService>()(
+	"pi-subagents/ConfigReader",
+) {}
 
-export const ConfigReaderLive = Layer.sync(ConfigReader)(() => {
-	throw new Error("ConfigReader.Live not yet implemented (Phase 3)");
-});
+// ============================================================================
+// Live
+// ============================================================================
+
+function loadJsonOrEmpty<T>(
+	configPath: string,
+): Effect.Effect<T, ConfigParseError, FileSystem> {
+	return Effect.gen(function* () {
+		const fsApi = yield* FileSystem;
+		const exists = yield* fsApi.exists(configPath);
+		if (!exists) return {} as T;
+		const text = yield* fsApi.read(configPath).pipe(
+			Effect.catchTag("FsNotFound", () => Effect.succeed("")),
+			Effect.catchTag("FsReadError", (cause) =>
+				Effect.fail(new ConfigParseError({ path: configPath, cause })),
+			),
+		);
+		if (text.length === 0) return {} as T;
+		return yield* Effect.try({
+			try: () => JSON.parse(text) as T,
+			catch: (cause) => new ConfigParseError({ path: configPath, cause }),
+		});
+	});
+}
+
+export const ConfigReaderLive = Layer.effect(ConfigReader)(
+	Effect.gen(function* () {
+		// Bind FileSystem at layer-build time so the returned closure has
+		// FileSystem already resolved; the service consumer doesn't need
+		// to provide FileSystem itself.
+		const fsApi = yield* FileSystem;
+		return ConfigReader.of({
+			loadExtensionConfig: Effect.provideService(
+				loadJsonOrEmpty<ExtensionConfig>(EXTENSION_CONFIG_PATH),
+				FileSystem,
+				fsApi,
+			),
+			loadIntercomConfig: Effect.provideService(
+				loadJsonOrEmpty<unknown>(INTERCOM_CONFIG_PATH),
+				FileSystem,
+				fsApi,
+			),
+		});
+	}),
+);
+
+// ============================================================================
+// Test
+// ============================================================================
 
 export const makeConfigReaderTest = (
-	_extension: ExtensionConfig = {},
-	_intercom: unknown = null,
+	extension: ExtensionConfig = {},
+	intercom: unknown = null,
 ): Layer.Layer<ConfigReader, never, never> =>
-	Layer.sync(ConfigReader)(() => {
-		throw new Error("ConfigReader.Test not yet implemented (Phase 3)");
-	});
+	Layer.succeed(ConfigReader)(
+		ConfigReader.of({
+			loadExtensionConfig: Effect.succeed(extension),
+			loadIntercomConfig: Effect.succeed(intercom),
+		}),
+	);
