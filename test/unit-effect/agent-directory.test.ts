@@ -111,6 +111,93 @@ describe("parseAgentFile", () => {
 	});
 });
 
+describe("AgentDirectory.discover (cross-scope)", () => {
+	const PROJECT = "/work/proj";
+	const PROJECT_AGENTS = "/work/proj/.pi/agents";
+
+	it("scope=user reads from both legacy and new user dirs, ignoring project", async () => {
+		const fs = makeFileSystemTest({
+			// Legacy user dir
+			[`${process.env.HOME ?? ""}/.pi/agent/agents/old.md`]:
+				"---\nname: old\ndescription: legacy user\n---\nbody",
+			// New user dir
+			[`${process.env.HOME ?? ""}/.agents/fresh.md`]:
+				"---\nname: fresh\ndescription: new user\n---\nbody",
+			// Project dir (must be ignored at scope=user)
+			[`${PROJECT_AGENTS}/proj.md`]: "---\nname: proj\ndescription: project\n---\nbody",
+		});
+		const layer = Layer.provide(AgentDirectoryLive, fs.layer);
+		const agents = await Effect.runPromise(
+			Effect.provide(
+				Effect.gen(function* () {
+					const dir = yield* AgentDirectory;
+					return yield* dir.discover(PROJECT, "user");
+				}),
+				layer,
+			),
+		);
+		const names = agents.map((a) => a.name).sort();
+		assert.deepEqual(names, ["fresh", "old"]);
+	});
+
+	it("scope=project reads only the project agents dir", async () => {
+		const fs = makeFileSystemTest({
+			[`${process.env.HOME ?? ""}/.agents/u.md`]:
+				"---\nname: u\ndescription: user\n---\nbody",
+			[`${PROJECT_AGENTS}/p.md`]: "---\nname: p\ndescription: project\n---\nbody",
+		});
+		const layer = Layer.provide(AgentDirectoryLive, fs.layer);
+		const agents = await Effect.runPromise(
+			Effect.provide(
+				Effect.gen(function* () {
+					const dir = yield* AgentDirectory;
+					return yield* dir.discover(PROJECT, "project");
+				}),
+				layer,
+			),
+		);
+		assert.deepEqual(agents.map((a) => a.name), ["p"]);
+	});
+
+	it("scope=both returns user agents AND the discovered project agents", async () => {
+		const fs = makeFileSystemTest({
+			[`${process.env.HOME ?? ""}/.agents/u.md`]:
+				"---\nname: u\ndescription: user\n---\nbody",
+			[`${PROJECT_AGENTS}/p.md`]: "---\nname: p\ndescription: project\n---\nbody",
+		});
+		const layer = Layer.provide(AgentDirectoryLive, fs.layer);
+		const agents = await Effect.runPromise(
+			Effect.provide(
+				Effect.gen(function* () {
+					const dir = yield* AgentDirectory;
+					return yield* dir.discover(PROJECT, "both");
+				}),
+				layer,
+			),
+		);
+		assert.deepEqual(agents.map((a) => a.name).sort(), ["p", "u"]);
+		// Note: the legacy code applies a precedence merge (project wins
+		// on name collisions); that lives in agent-selection.ts and is
+		// scheduled for Phase 8 with the management surface.
+	});
+
+	it("scope=project with no project root returns []", async () => {
+		// /tmp/random has no .pi or .agents up the tree.
+		const fs = makeFileSystemTest({});
+		const layer = Layer.provide(AgentDirectoryLive, fs.layer);
+		const agents = await Effect.runPromise(
+			Effect.provide(
+				Effect.gen(function* () {
+					const dir = yield* AgentDirectory;
+					return yield* dir.discover("/tmp/no-project-here", "project");
+				}),
+				layer,
+			),
+		);
+		assert.deepEqual([...agents], []);
+	});
+});
+
 describe("AgentDirectory.discoverIn", () => {
 	it("loads .md files from a single directory and skips .chain.md", async () => {
 		const fs = makeFileSystemTest({

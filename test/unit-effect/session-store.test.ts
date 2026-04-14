@@ -13,7 +13,7 @@ import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { Effect, Layer } from "effect";
 import { SessionStore, SessionStoreLive } from "../../src/services/SessionStore.ts";
-import { FileSystem, makeFileSystemTest } from "../../src/services/FileSystem.ts";
+import { FileSystem, FileSystemLive, makeFileSystemTest } from "../../src/services/FileSystem.ts";
 
 const cleanupDirs: string[] = [];
 
@@ -40,9 +40,25 @@ describe("SessionStore.subagentSessionRoot", () => {
 		assert.equal(root, "/sessions/abc");
 	});
 
-	it("falls back to mkdtemp when no parent session", async () => {
+	it("falls back to mkdtemp via the Test FS (returns a synthetic /tmp path)", async () => {
 		const fsTest = makeFileSystemTest();
 		const layer = Layer.provide(SessionStoreLive, fsTest.layer);
+		const root = await Effect.runPromise(
+			Effect.provide(
+				Effect.gen(function* () {
+					const store = yield* SessionStore;
+					return yield* store.subagentSessionRoot(null);
+				}),
+				layer,
+			),
+		);
+		assert.match(path.basename(root), /^pi-subagent-session-/);
+		// Test layer doesn't touch real disk; the directory is registered
+		// in the in-memory store and FileSystem.exists(root) will be true.
+	});
+
+	it("falls back to mkdtemp via the Live FS (creates a real tmp dir)", async () => {
+		const layer = Layer.provide(SessionStoreLive, FileSystemLive);
 		const root = await Effect.runPromise(
 			Effect.provide(
 				Effect.gen(function* () {

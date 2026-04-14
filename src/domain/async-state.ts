@@ -15,6 +15,7 @@
  *                          chain in the runner config)
  */
 import { Schema } from "effect";
+import { ModelAttemptSchema } from "./results.ts";
 
 export const TokenUsageSchema = Schema.Struct({
 	input: Schema.Number,
@@ -32,6 +33,7 @@ const AsyncStatusStepSchema = Schema.Struct({
 	skills: Schema.optional(Schema.Array(Schema.String)),
 	model: Schema.optional(Schema.String),
 	attemptedModels: Schema.optional(Schema.Array(Schema.String)),
+	modelAttempts: Schema.optional(Schema.Array(ModelAttemptSchema)),
 	error: Schema.optional(Schema.String),
 });
 

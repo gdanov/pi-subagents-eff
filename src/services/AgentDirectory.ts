@@ -12,7 +12,6 @@
  * Phase 8). Frontmatter parsing is its own pure helper exposed for
  * reuse.
  */
-import { statSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Context, Effect, Layer } from "effect";
@@ -191,23 +190,35 @@ export class AgentDirectory extends Context.Service<AgentDirectory, AgentDirecto
 const USER_AGENTS_DIR_OLD = path.join(os.homedir(), ".pi", "agent", "agents");
 const USER_AGENTS_DIR_NEW = path.join(os.homedir(), ".agents");
 
+/**
+ * Walk up from `cwd` looking for a `.pi/` or `.agents/` directory and
+ * return the appropriate agents subdir (or null if none found). Uses
+ * the FileSystem service for every directory probe so it stays testable
+ * and never escapes the Effect runtime.
+ */
 function findNearestProjectAgentsDir(
 	cwd: string,
-	isDir: (p: string) => boolean,
-): string | null {
-	let currentDir = cwd;
-	while (true) {
-		if (isDir(path.join(currentDir, ".pi")) || isDir(path.join(currentDir, ".agents"))) {
-			const candidateAlt = path.join(currentDir, ".agents");
-			if (isDir(candidateAlt)) return candidateAlt;
-			const candidate = path.join(currentDir, ".pi", "agents");
-			if (isDir(candidate)) return candidate;
-			return null;
+	fsApi: { isDirectory: (p: string) => Effect.Effect<boolean, never> },
+): Effect.Effect<string | null> {
+	return Effect.gen(function* () {
+		let currentDir = cwd;
+		// Bound the climb to avoid pathological loops on weird cwds.
+		for (let depth = 0; depth < 64; depth++) {
+			const hasPiMarker = yield* fsApi.isDirectory(path.join(currentDir, ".pi"));
+			const hasAgentsMarker = yield* fsApi.isDirectory(path.join(currentDir, ".agents"));
+			if (hasPiMarker || hasAgentsMarker) {
+				const candidateAlt = path.join(currentDir, ".agents");
+				if (yield* fsApi.isDirectory(candidateAlt)) return candidateAlt;
+				const candidate = path.join(currentDir, ".pi", "agents");
+				if (yield* fsApi.isDirectory(candidate)) return candidate;
+				return null;
+			}
+			const parentDir = path.dirname(currentDir);
+			if (parentDir === currentDir) return null;
+			currentDir = parentDir;
 		}
-		const parentDir = path.dirname(currentDir);
-		if (parentDir === currentDir) return null;
-		currentDir = parentDir;
-	}
+		return null;
+	});
 }
 
 // ============================================================================
@@ -217,14 +228,6 @@ function findNearestProjectAgentsDir(
 export const AgentDirectoryLive = Layer.effect(AgentDirectory)(
 	Effect.gen(function* () {
 		const fsApi = yield* FileSystem;
-
-		const isDirSync = (p: string): boolean => {
-			try {
-				return statSync(p).isDirectory();
-			} catch {
-				return false;
-			}
-		};
 
 		const discoverIn = (
 			dir: string,
@@ -270,7 +273,9 @@ export const AgentDirectoryLive = Layer.effect(AgentDirectory)(
 					? yield* discoverIn(USER_AGENTS_DIR_NEW, "user")
 					: ([] as ReadonlyArray<AgentConfig>);
 
-				const projectDir = wantProject ? findNearestProjectAgentsDir(cwd, isDirSync) : null;
+				const projectDir = wantProject
+					? yield* findNearestProjectAgentsDir(cwd, fsApi)
+					: null;
 				const project = projectDir
 					? yield* discoverIn(projectDir, "project")
 					: ([] as ReadonlyArray<AgentConfig>);

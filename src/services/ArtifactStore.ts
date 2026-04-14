@@ -112,12 +112,17 @@ export const ArtifactStoreLive = Layer.effect(ArtifactStore)(
 				for (const file of entries) {
 					if (file === CLEANUP_MARKER_FILE) continue;
 					const filePath = path.join(dir, file);
-					// Best-effort per-file: swallow stat/rm errors so one bad
-					// entry can't block cleanup of the rest.
-					yield* Effect.gen(function* () {
-						const stat = yield* fsApi.stat(filePath);
-						if (stat.mtimeMs < cutoff) yield* fsApi.rm(filePath);
-					}).pipe(Effect.catchCause(() => Effect.void));
+					// Best-effort per-file: Effect.ignore swallows ordinary
+					// failures (FsNotFound mid-scan, FsReadError, FsWriteError)
+					// so one bad entry can't block cleanup of the rest, but
+					// it still propagates interruption — important if the
+					// extension is shutting down mid-cleanup.
+					yield* Effect.ignore(
+						Effect.gen(function* () {
+							const stat = yield* fsApi.stat(filePath);
+							if (stat.mtimeMs < cutoff) yield* fsApi.rm(filePath);
+						}),
+					);
 				}
 
 				yield* fsApi.write(markerPath, String(now));

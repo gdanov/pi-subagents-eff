@@ -131,4 +131,47 @@ describe("ArtifactStore.cleanupOlderThan", () => {
 		// no exceptions, no files added
 		assert.equal(fs.controls.listFiles().length, 0);
 	});
+
+	it("deletes files older than the cutoff and refreshes the marker", async () => {
+		// The Test FS stamps mtime at write time; with maxAgeDays=0
+		// cutoff and mtime can race within the same millisecond and the
+		// `mtime < cutoff` predicate misses. Write, then delay so the
+		// scan's "now" is reliably after the file's mtime.
+		const fs = makeFileSystemTest({ "/art/old.md": "old content" });
+		const layer = Layer.provide(ArtifactStoreLive, fs.layer);
+		await Effect.runPromise(
+			Effect.provide(
+				Effect.gen(function* () {
+					const store = yield* ArtifactStore;
+					yield* Effect.sleep("20 millis");
+					yield* store.cleanupOlderThan("/art", 0);
+				}),
+				layer,
+			),
+		);
+		assert.equal(fs.controls.getFile("/art/old.md"), undefined);
+		assert.ok(fs.controls.getFile("/art/.last-cleanup"));
+	});
+
+	it("respects the 24h marker rate-limit (skips when marker is fresh)", async () => {
+		// Seed both a marker (fresh) and one file. cleanupOlderThan should
+		// see the recent marker and bail before looking at any file, so
+		// the file stays.
+		const fs = makeFileSystemTest({
+			"/art/.last-cleanup": String(Date.now()),
+			"/art/keep.md": "x",
+		});
+		const layer = Layer.provide(ArtifactStoreLive, fs.layer);
+		await Effect.runPromise(
+			Effect.provide(
+				Effect.gen(function* () {
+					const store = yield* ArtifactStore;
+					yield* store.cleanupOlderThan("/art", 0);
+				}),
+				layer,
+			),
+		);
+		// File MUST survive — proves the rate-limit short-circuit fired.
+		assert.equal(fs.controls.getFile("/art/keep.md"), "x");
+	});
 });

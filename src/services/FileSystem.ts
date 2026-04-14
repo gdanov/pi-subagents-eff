@@ -16,6 +16,8 @@
  */
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { Cause, Context, Effect, Layer, Queue, Stream } from "effect";
 import { FsNotFound, FsReadError, FsWatchError, FsWriteError } from "../errors.ts";
 
@@ -31,7 +33,10 @@ export interface FileSystemService {
 	readonly append: (path: string, contents: string) => Effect.Effect<void, FsWriteError>;
 	readonly exists: (path: string) => Effect.Effect<boolean, never>;
 	readonly mkdir: (path: string) => Effect.Effect<void, FsWriteError>;
+	/** Create a unique temp directory under os.tmpdir(); returns the absolute path. */
+	readonly mkdtemp: (prefix: string) => Effect.Effect<string, FsWriteError>;
 	readonly rm: (path: string, opts?: { recursive?: boolean; force?: boolean }) => Effect.Effect<void, FsWriteError>;
+	readonly isDirectory: (path: string) => Effect.Effect<boolean, never>;
 	readonly readDir: (path: string) => Effect.Effect<ReadonlyArray<string>, FsReadError | FsNotFound>;
 	readonly stat: (
 		path: string,
@@ -86,11 +91,27 @@ function existsEffect(path: string): Effect.Effect<boolean, never> {
 	return Effect.promise(() => fsp.access(path).then(() => true, () => false));
 }
 
-function mkdirEffect(path: string): Effect.Effect<void, FsWriteError> {
+function mkdirEffect(p: string): Effect.Effect<void, FsWriteError> {
 	return Effect.tryPromise({
-		try: () => fsp.mkdir(path, { recursive: true }).then(() => undefined),
-		catch: (cause) => new FsWriteError({ path, cause }),
+		try: () => fsp.mkdir(p, { recursive: true }).then(() => undefined),
+		catch: (cause) => new FsWriteError({ path: p, cause }),
 	});
+}
+
+function mkdtempEffect(prefix: string): Effect.Effect<string, FsWriteError> {
+	return Effect.tryPromise({
+		try: () => fsp.mkdtemp(path.join(os.tmpdir(), prefix)),
+		catch: (cause) => new FsWriteError({ path: os.tmpdir(), cause }),
+	});
+}
+
+function isDirectoryEffect(p: string): Effect.Effect<boolean, never> {
+	return Effect.promise(() =>
+		fsp.stat(p).then(
+			(s) => s.isDirectory(),
+			() => false,
+		),
+	);
 }
 
 function rmEffect(path: string, opts?: { recursive?: boolean; force?: boolean }): Effect.Effect<void, FsWriteError> {
@@ -126,11 +147,11 @@ function statEffect(
  * deleted) end the stream with an FsWatchError so the caller's retry
  * schedule can decide whether to restart.
  */
-function watchStreamLive(path: string): Stream.Stream<WatchEvent, FsWatchError> {
+function watchStreamLive(p: string): Stream.Stream<WatchEvent, FsWatchError> {
 	return Stream.callback<WatchEvent, FsWatchError>((queue) =>
 		Effect.acquireRelease(
 			Effect.sync(() => {
-				const watcher = fs.watch(path, { encoding: "utf-8" }, (eventType, filename) => {
+				const watcher = fs.watch(p, { encoding: "utf-8" }, (eventType, filename) => {
 					if (filename === null) return;
 					Queue.offerUnsafe(queue, {
 						type: eventType === "rename" ? "rename" : "change",
@@ -138,7 +159,13 @@ function watchStreamLive(path: string): Stream.Stream<WatchEvent, FsWatchError> 
 					});
 				});
 				watcher.on("error", (err) => {
-					Queue.failCauseUnsafe(queue, Cause.fail(new FsWatchError({ path, cause: err })));
+					Queue.failCauseUnsafe(queue, Cause.fail(new FsWatchError({ path: p, cause: err })));
+				});
+				// Without this, callers waiting on a take(N)-pipe hang forever
+				// when the watched directory disappears (the OS closes the
+				// underlying handle but never fires another data event).
+				watcher.on("close", () => {
+					Queue.endUnsafe(queue);
 				});
 				return watcher;
 			}),
@@ -154,7 +181,9 @@ const liveService: FileSystemService = {
 	append: appendEffect,
 	exists: existsEffect,
 	mkdir: mkdirEffect,
+	mkdtemp: mkdtempEffect,
 	rm: rmEffect,
+	isDirectory: isDirectoryEffect,
 	readDir: readDirEffect,
 	stat: statEffect,
 	watch: watchStreamLive,
@@ -191,84 +220,126 @@ export function makeFileSystemTest(
 ): FileSystemTestBuild {
 	const store = new Map<string, Uint8Array>();
 	const stats = new Map<string, { mtimeMs: number; size: number }>();
+	const dirs = new Set<string>();
 	const watchers = new Map<string, Set<Queue.Queue<WatchEvent, FsWatchError | Cause.Done>>>();
 	const encoder = new TextEncoder();
+	let mkdtempCounter = 0;
 
-	function setFile(path: string, contents: string | Uint8Array): void {
+	function ensureParents(p: string): void {
+		// Track each path component as a directory so empty-but-created
+		// directories are distinguishable from missing ones.
+		const parts = p.split("/").filter(Boolean);
+		let acc = p.startsWith("/") ? "" : "";
+		for (let i = 0; i < parts.length - 1; i++) {
+			acc = `${acc}/${parts[i]}`;
+			dirs.add(acc);
+		}
+	}
+
+	function setFile(p: string, contents: string | Uint8Array): void {
 		const bytes = typeof contents === "string" ? encoder.encode(contents) : contents;
-		store.set(path, bytes);
-		stats.set(path, { mtimeMs: Date.now(), size: bytes.byteLength });
+		store.set(p, bytes);
+		stats.set(p, { mtimeMs: Date.now(), size: bytes.byteLength });
+		ensureParents(p);
 	}
 
 	for (const [k, v] of Object.entries(initial ?? {})) setFile(k, v);
 
+	function isKnownDirectory(p: string): boolean {
+		if (dirs.has(p)) return true;
+		// A path is also a directory if any tracked file lives under it.
+		const prefix = p.endsWith("/") ? p : `${p}/`;
+		for (const k of store.keys()) if (k.startsWith(prefix)) return true;
+		for (const d of dirs) if (d.startsWith(prefix)) return true;
+		return false;
+	}
+
 	const test: FileSystemService = {
-		read: (path) => {
-			const bytes = store.get(path);
-			if (!bytes) return Effect.fail(new FsNotFound({ path }));
+		read: (p) => {
+			const bytes = store.get(p);
+			if (!bytes) return Effect.fail(new FsNotFound({ path: p }));
 			return Effect.succeed(new TextDecoder("utf-8").decode(bytes));
 		},
-		readBytes: (path) => {
-			const bytes = store.get(path);
-			if (!bytes) return Effect.fail(new FsNotFound({ path }));
+		readBytes: (p) => {
+			const bytes = store.get(p);
+			if (!bytes) return Effect.fail(new FsNotFound({ path: p }));
 			return Effect.succeed(bytes);
 		},
-		write: (path, contents) =>
+		write: (p, contents) =>
 			Effect.sync(() => {
-				setFile(path, contents);
+				setFile(p, contents);
 			}),
-		append: (path, contents) =>
+		append: (p, contents) =>
 			Effect.sync(() => {
-				const existing = store.get(path);
+				const existing = store.get(p);
 				const next = existing
 					? new Uint8Array([...existing, ...encoder.encode(contents)])
 					: encoder.encode(contents);
-				setFile(path, next);
+				setFile(p, next);
 			}),
-		exists: (p) => {
-			if (store.has(p)) return Effect.succeed(true);
-			// A directory "exists" if any tracked file lives under it.
-			const prefix = p.endsWith("/") ? p : `${p}/`;
-			for (const k of store.keys()) if (k.startsWith(prefix)) return Effect.succeed(true);
-			return Effect.succeed(false);
-		},
-		mkdir: (_path) => Effect.void,
-		rm: (path) =>
+		exists: (p) => Effect.succeed(store.has(p) || isKnownDirectory(p)),
+		mkdir: (p) =>
 			Effect.sync(() => {
-				store.delete(path);
-				stats.delete(path);
+				dirs.add(p);
+				ensureParents(`${p}/.keep`);
 			}),
-		readDir: (path) => {
-			const prefix = path.endsWith("/") ? path : `${path}/`;
-			const entries = [...store.keys()]
+		mkdtemp: (prefix) =>
+			Effect.sync(() => {
+				mkdtempCounter += 1;
+				const dir = `/tmp/${prefix}${mkdtempCounter.toString(36).padStart(6, "0")}`;
+				dirs.add(dir);
+				return dir;
+			}),
+		rm: (p) =>
+			Effect.sync(() => {
+				store.delete(p);
+				stats.delete(p);
+				dirs.delete(p);
+				// Drop child entries when removing a directory recursively.
+				const prefix = p.endsWith("/") ? p : `${p}/`;
+				for (const k of [...store.keys()]) {
+					if (k.startsWith(prefix)) {
+						store.delete(k);
+						stats.delete(k);
+					}
+				}
+				for (const d of [...dirs]) if (d.startsWith(prefix)) dirs.delete(d);
+				// Notify watchers that the dir went away.
+				const set = watchers.get(p);
+				if (set) for (const q of set) Queue.endUnsafe(q);
+			}),
+		isDirectory: (p) => Effect.succeed(isKnownDirectory(p)),
+		readDir: (p) => {
+			if (!isKnownDirectory(p)) return Effect.fail(new FsNotFound({ path: p }));
+			const prefix = p.endsWith("/") ? p : `${p}/`;
+			const fileEntries = [...store.keys()]
 				.filter((k) => k.startsWith(prefix))
 				.map((k) => k.slice(prefix.length).split("/")[0])
-				.filter((v): v is string => v !== undefined);
-			const unique = [...new Set(entries)];
-			if (unique.length === 0 && !store.has(path)) {
-				// empty directory is fine, but a fully missing path returns FsNotFound
-				const anyPrefix = [...store.keys()].some((k) => k.startsWith(prefix));
-				if (!anyPrefix) return Effect.fail(new FsNotFound({ path }));
-			}
-			return Effect.succeed(unique);
+				.filter((v): v is string => v !== undefined && v.length > 0);
+			const dirEntries = [...dirs]
+				.filter((k) => k.startsWith(prefix) && k !== p)
+				.map((k) => k.slice(prefix.length).split("/")[0])
+				.filter((v): v is string => v !== undefined && v.length > 0);
+			return Effect.succeed([...new Set([...fileEntries, ...dirEntries])]);
 		},
-		stat: (path) => {
-			const s = stats.get(path);
-			if (!s) return Effect.fail(new FsNotFound({ path }));
-			return Effect.succeed(s);
+		stat: (p) => {
+			const s = stats.get(p);
+			if (s) return Effect.succeed(s);
+			if (isKnownDirectory(p)) return Effect.succeed({ mtimeMs: 0, size: 0 });
+			return Effect.fail(new FsNotFound({ path: p }));
 		},
-		watch: (path) =>
+		watch: (p) =>
 			Stream.callback<WatchEvent, FsWatchError>((queue) =>
 				Effect.acquireRelease(
 					Effect.sync(() => {
-						const set = watchers.get(path) ?? new Set();
+						const set = watchers.get(p) ?? new Set();
 						set.add(queue);
-						watchers.set(path, set);
+						watchers.set(p, set);
 						return queue;
 					}),
 					(q) =>
 						Effect.sync(() => {
-							watchers.get(path)?.delete(q);
+							watchers.get(p)?.delete(q);
 						}),
 				),
 			),

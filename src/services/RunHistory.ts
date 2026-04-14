@@ -94,13 +94,20 @@ export const RunHistoryLive = Layer.effect(RunHistory)(
 						.pipe(Effect.catchTag("FsWriteError", () => Effect.void));
 				}
 
+				// Skip malformed lines (matches legacy behavior). Done via
+				// Effect.try + .pipe(Effect.option) so a single bad JSON
+				// line is filtered out rather than aborting the whole read.
+				const parsedOptions = yield* Effect.all(
+					lines.map((line) =>
+						Effect.try({
+							try: () => JSON.parse(line) as RunEntry,
+							catch: () => null,
+						}).pipe(Effect.option),
+					),
+				);
 				const parsed: RunEntry[] = [];
-				for (const line of lines) {
-					try {
-						parsed.push(JSON.parse(line) as RunEntry);
-					} catch {
-						// Skip malformed lines (matches legacy behavior).
-					}
+				for (const opt of parsedOptions) {
+					if (opt._tag === "Some" && opt.value !== null) parsed.push(opt.value);
 				}
 				return parsed;
 			});

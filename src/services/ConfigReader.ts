@@ -26,7 +26,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Context, Effect, Layer } from "effect";
 import { ConfigParseError } from "../errors.ts";
-import { FileSystem } from "./FileSystem.ts";
+import { FileSystem, type FileSystemService } from "./FileSystem.ts";
 
 // ============================================================================
 // Path constants (mirror the legacy hard-coded paths)
@@ -82,11 +82,16 @@ export class ConfigReader extends Context.Service<ConfigReader, ConfigReaderServ
 // Live
 // ============================================================================
 
+/**
+ * Pure helper: takes the resolved FileSystem instance directly so it
+ * doesn't drag a `FileSystem` requirement back into the env channel.
+ * Both Live and any future bespoke caller go through this entry point.
+ */
 function loadJsonOrEmpty<T>(
+	fsApi: FileSystemService,
 	configPath: string,
-): Effect.Effect<T, ConfigParseError, FileSystem> {
+): Effect.Effect<T, ConfigParseError> {
 	return Effect.gen(function* () {
-		const fsApi = yield* FileSystem;
 		const exists = yield* fsApi.exists(configPath);
 		if (!exists) return {} as T;
 		const text = yield* fsApi.read(configPath).pipe(
@@ -105,21 +110,10 @@ function loadJsonOrEmpty<T>(
 
 export const ConfigReaderLive = Layer.effect(ConfigReader)(
 	Effect.gen(function* () {
-		// Bind FileSystem at layer-build time so the returned closure has
-		// FileSystem already resolved; the service consumer doesn't need
-		// to provide FileSystem itself.
 		const fsApi = yield* FileSystem;
 		return ConfigReader.of({
-			loadExtensionConfig: Effect.provideService(
-				loadJsonOrEmpty<ExtensionConfig>(EXTENSION_CONFIG_PATH),
-				FileSystem,
-				fsApi,
-			),
-			loadIntercomConfig: Effect.provideService(
-				loadJsonOrEmpty<unknown>(INTERCOM_CONFIG_PATH),
-				FileSystem,
-				fsApi,
-			),
+			loadExtensionConfig: loadJsonOrEmpty<ExtensionConfig>(fsApi, EXTENSION_CONFIG_PATH),
+			loadIntercomConfig: loadJsonOrEmpty<unknown>(fsApi, INTERCOM_CONFIG_PATH),
 		});
 	}),
 );

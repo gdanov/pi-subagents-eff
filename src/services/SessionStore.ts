@@ -14,13 +14,10 @@
  * Both depend on FileSystem (mkdtemp goes through a small helper since
  * FileSystem doesn't currently expose `mkdtemp`).
  */
-import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { Context, Effect, Layer } from "effect";
 import type { FsReadError, FsWriteError } from "../errors.ts";
 import { FileSystem } from "./FileSystem.ts";
-import { FsWriteError as FsWriteErrorClass } from "../errors.ts";
 
 export interface SessionStoreService {
 	readonly subagentSessionRoot: (parentSessionFile: string | null) => Effect.Effect<string, FsWriteError>;
@@ -46,13 +43,7 @@ export const SessionStoreLive = Layer.effect(SessionStore)(
 					const sessionsDir = path.dirname(parentSessionFile);
 					return path.join(sessionsDir, baseName);
 				}
-				// mkdtemp isn't on FileSystem (Node-specific, sync-only).
-				// Wrap directly here; callers see it as part of SessionStore.
-				return yield* Effect.try({
-					try: () => fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-session-")),
-					catch: (cause) =>
-						new FsWriteErrorClass({ path: os.tmpdir(), cause }),
-				});
+				return yield* fsApi.mkdtemp("pi-subagent-session-");
 			});
 
 		const findLatest = (sessionDir: string) =>
