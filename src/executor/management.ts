@@ -22,7 +22,7 @@
  * can hand them straight to Pi as `AgentToolResult<Details>`.
  */
 import * as path from "node:path";
-import { Effect } from "effect";
+import { Effect, Result, Schema } from "effect";
 import type { Details } from "../domain/results.ts";
 import { AgentDirectory, type AgentConfig, type AgentScope } from "../services/AgentDirectory.ts";
 import {
@@ -135,15 +135,20 @@ function asListScope(value: unknown): AgentScope {
 	return "both";
 }
 
-function configObject(config: unknown): { readonly value?: Record<string, unknown>; readonly error?: string } {
+const decodeJsonStringResult = Schema.decodeUnknownResult(Schema.UnknownFromJsonString);
+
+function configObject(
+	config: unknown,
+): { readonly value?: Record<string, unknown>; readonly error?: string } {
 	let val = config;
 	if (typeof val === "string") {
-		try {
-			val = JSON.parse(val);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			return { error: `config must be valid JSON: ${message}` };
+		// Pure Schema-based JSON decode; no try/catch. Failure surfaces as
+		// a Result.Failure whose issue has a human-readable message.
+		const decoded = decodeJsonStringResult(val);
+		if (Result.isFailure(decoded)) {
+			return { error: `config must be valid JSON: ${String(decoded.failure)}` };
 		}
+		val = decoded.success;
 	}
 	if (!val || typeof val !== "object" || Array.isArray(val)) return {};
 	return { value: val as Record<string, unknown> };
@@ -152,6 +157,24 @@ function configObject(config: unknown): { readonly value?: Record<string, unknow
 function hasKey(obj: Record<string, unknown>, key: string): boolean {
 	return Object.prototype.hasOwnProperty.call(obj, key);
 }
+
+/**
+ * Surface FsWriteError as a user-visible `fail(...)` ManagementToolResult
+ * instead of silently swallowing it. Returns undefined on success so
+ * the caller can early-return `undefined` → continue, or a concrete
+ * fail(...) → propagate.
+ */
+const writeOrFail = <A>(
+	description: string,
+	effect: Effect.Effect<A, { readonly _tag: "FsWriteError"; readonly path: string; readonly cause: unknown }>,
+): Effect.Effect<ManagementToolResult | undefined> =>
+	effect.pipe(
+		Effect.asVoid,
+		Effect.map(() => undefined as ManagementToolResult | undefined),
+		Effect.catchTag("FsWriteError", (err) =>
+			Effect.succeed(fail(`${description} failed at ${err.path}: ${String(err.cause)}`)),
+		),
+	);
 
 // ============================================================================
 // Dispatcher
@@ -304,7 +327,8 @@ const handleCreate = (
 				filePath,
 				steps: stepsResult.steps ?? [],
 			};
-			yield* dir.writeChain(filePath, serializeChain(chain)).pipe(Effect.ignore);
+			const err = yield* writeOrFail(`create chain '${name}'`, dir.writeChain(filePath, serializeChain(chain)));
+			if (err) return err;
 			return ok(`Created chain '${name}' at ${filePath}.`);
 		}
 
@@ -324,7 +348,11 @@ const handleCreate = (
 			cfg,
 		);
 
-		yield* dir.writeAgent(filePath, serializeAgent(agent)).pipe(Effect.ignore);
+		const writeErr = yield* writeOrFail(
+			`create agent '${name}'`,
+			dir.writeAgent(filePath, serializeAgent(agent)),
+		);
+		if (writeErr) return writeErr;
 		return ok(`Created agent '${name}' at ${filePath}.`);
 	});
 
@@ -355,9 +383,11 @@ const handleUpdate = (
 			const target = all.find((a) => a.name === params.agent || a.name === sanitizeName(params.agent ?? ""));
 			if (!target) return fail(`Agent '${params.agent}' not found.`);
 			const updated = applyConfigToAgent(target, cfg);
-			yield* dir
-				.writeAgent(target.filePath, serializeAgent(updated))
-				.pipe(Effect.ignore);
+			const err = yield* writeOrFail(
+				`update agent '${target.name}'`,
+				dir.writeAgent(target.filePath, serializeAgent(updated)),
+			);
+			if (err) return err;
 			return ok(`Updated agent '${target.name}' at ${target.filePath}.`);
 		}
 
@@ -367,9 +397,11 @@ const handleUpdate = (
 		const target = allChains.find((c) => c.name === params.chainName || c.name === sanitizeName(params.chainName ?? ""));
 		if (!target) return fail(`Chain '${params.chainName}' not found.`);
 		const updatedChain: ChainConfig = applyConfigToChain(target, cfg);
-		yield* dir
-			.writeChain(target.filePath, serializeChain(updatedChain))
-			.pipe(Effect.ignore);
+		const err = yield* writeOrFail(
+			`update chain '${target.name}'`,
+			dir.writeChain(target.filePath, serializeChain(updatedChain)),
+		);
+		if (err) return err;
 		return ok(`Updated chain '${target.name}' at ${target.filePath}.`);
 	});
 
@@ -394,7 +426,11 @@ const handleDelete = (
 			const all = yield* dir.discover(ctx.cwd, "both").pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<AgentConfig>));
 			const target = all.find((a) => a.name === params.agent || a.name === sanitizeName(params.agent ?? ""));
 			if (!target) return fail(`Agent '${params.agent}' not found.`);
-			yield* dir.remove(target.filePath).pipe(Effect.ignore);
+			const err = yield* writeOrFail(
+				`delete agent '${target.name}'`,
+				dir.remove(target.filePath),
+			);
+			if (err) return err;
 			return ok(`Deleted agent '${target.name}' at ${target.filePath}.`);
 		}
 
@@ -403,7 +439,11 @@ const handleDelete = (
 		);
 		const target = allChains.find((c) => c.name === params.chainName || c.name === sanitizeName(params.chainName ?? ""));
 		if (!target) return fail(`Chain '${params.chainName}' not found.`);
-		yield* dir.remove(target.filePath).pipe(Effect.ignore);
+		const err = yield* writeOrFail(
+			`delete chain '${target.name}'`,
+			dir.remove(target.filePath),
+		);
+		if (err) return err;
 		return ok(`Deleted chain '${target.name}' at ${target.filePath}.`);
 	});
 

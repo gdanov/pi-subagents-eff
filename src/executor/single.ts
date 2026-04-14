@@ -434,7 +434,12 @@ export const runSingle = (
 			});
 		}
 
-		// Best-effort tempDir cleanup — never fails the run.
+		// Best-effort tempDir cleanup.
+		// Effect.ignore — not catchCause — so interruption still aborts.
+		// The tempDir is scoped under os.tmpdir(), so a leaked dir is
+		// harmless (the OS cleans eventually). A failed rm is logged
+		// by Effect's default runtime logger if a policy is attached
+		// but is not treated as a run failure.
 		const shouldCleanup = options.cleanupTempDir ?? true;
 		if (tempDir && shouldCleanup) {
 			yield* Effect.ignore(fsApi.rm(tempDir, { recursive: true, force: true }));

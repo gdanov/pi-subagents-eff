@@ -130,6 +130,77 @@ Plan changes.
 		}
 	});
 
+	it("serializeChain output is byte-identical for canonical-shape input", () => {
+		// The legacy `.chain.md` on-disk format is public API; any
+		// whitespace / key-ordering drift risks breaking `git diff` on
+		// chains checked into project repos. Pin the canonical shape.
+		const chain = {
+			name: "two-step",
+			description: "do the thing",
+			source: "user" as const,
+			filePath: "/p.chain.md",
+			steps: [
+				{
+					agent: "scout",
+					task: "Find configs.",
+					output: "ctx.md",
+					reads: ["shared.md"],
+					model: "anthropic/claude-sonnet-4",
+				},
+				{
+					agent: "planner",
+					task: "Plan changes.",
+					reads: ["ctx.md"],
+					progress: true,
+				},
+			],
+		};
+		const expected = `---
+name: two-step
+description: do the thing
+---
+
+## scout
+output: ctx.md
+reads: shared.md
+model: anthropic/claude-sonnet-4
+
+Find configs.
+
+## planner
+reads: ctx.md
+progress: true
+
+Plan changes.
+`;
+		assert.equal(serializeChain(chain), expected);
+	});
+
+	it("full byte-identical round-trip on a representative chain", () => {
+		// parse(serialize(parse(x))) must produce a byte-identical
+		// second serialization even if the first input had whitespace
+		// oddities. This catches silent drift in key emission order.
+		const original = `---
+name: rt
+description: round trip
+---
+
+## scout
+output: out.md
+
+Body one.
+
+## reviewer
+reads: out.md
+progress: false
+
+Body two.
+`;
+		const first = serializeChain(parseChain(original, "user", "/rt.chain.md"));
+		const second = serializeChain(parseChain(first, "user", "/rt.chain.md"));
+		assert.equal(first, second, "serialize must be idempotent under re-parse");
+	});
+
 	it("serialize emits frontmatter + per-step config + body", () => {
 		const out = serializeChain({
 			name: "x",

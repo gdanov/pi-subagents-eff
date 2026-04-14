@@ -236,6 +236,13 @@ function releaseChild(child: ChildProcess): Effect.Effect<void> {
 		// Already exited — nothing to do.
 		if (child.exitCode !== null || child.signalCode !== null || child.killed) return;
 		child.kill("SIGTERM");
+		// SIGKILL escalation after 3 s.
+		//
+		// `.unref()` is load-bearing: without it a cooperating child
+		// that SIGTERMs cleanly within 3 s still has the escalation
+		// timer sitting in the Node event loop, which can delay
+		// process shutdown by up to SIGTERM_GRACE_MS. With .unref()
+		// the timer no longer blocks the event loop — DO NOT REMOVE.
 		setTimeout(() => {
 			if (child.exitCode === null && child.signalCode === null && !child.killed) {
 				child.kill("SIGKILL");

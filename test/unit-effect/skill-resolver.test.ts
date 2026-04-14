@@ -8,6 +8,7 @@ import {
 	buildSkillInjection,
 	makeSkillResolverTest,
 	SkillResolver,
+	SkillResolverLive,
 	SkillResolverNoop,
 	type ResolvedSkill,
 } from "../../src/services/SkillResolver.ts";
@@ -39,7 +40,7 @@ describe("buildSkillInjection", () => {
 	});
 });
 
-describe("SkillResolverNoop (default Live until full impl lands)", () => {
+describe("SkillResolverNoop contract (locks no-op behavior)", () => {
 	it("returns every name as missing", async () => {
 		const result = await Effect.runPromise(
 			Effect.provide(
@@ -52,6 +53,37 @@ describe("SkillResolverNoop (default Live until full impl lands)", () => {
 		);
 		assert.deepEqual([...result.resolved], []);
 		assert.deepEqual([...result.missing], ["a", "b"]);
+	});
+
+	/**
+	 * Lock the "Live = Noop" alias. A future port to the full
+	 * fs-walking resolver must update this test intentionally.
+	 * Without this, an accidental "upgrade" of SkillResolverLive
+	 * could silently change behavior for every downstream caller
+	 * that relied on the legacy "no skills found" path.
+	 */
+	it("SkillResolverLive is the Noop layer until the full impl lands", () => {
+		assert.equal(
+			SkillResolverLive,
+			SkillResolverNoop,
+			"SkillResolverLive must alias SkillResolverNoop until the full resolver is ported — see services/SkillResolver.ts",
+		);
+	});
+
+	it("passes the primaryCwd through without fs access (proves no-op)", async () => {
+		// If the no-op ever gains real fs logic, the current `cwd`
+		// argument gets used and tests start sensitive to CI HOME
+		// state. This sentinel asserts the argument is inert.
+		const result = await Effect.runPromise(
+			Effect.provide(
+				Effect.gen(function* () {
+					const r = yield* SkillResolver;
+					return yield* r.resolve(["x"], "/nonexistent/cwd/asdf");
+				}),
+				SkillResolverNoop,
+			),
+		);
+		assert.deepEqual([...result.missing], ["x"]);
 	});
 });
 

@@ -167,6 +167,13 @@ function buildTracker(config: AsyncJobTrackerConfig) {
 				// Schedule removal after 10s — fork as a detached fiber
 				// so it survives the caller scope (matches the legacy
 				// setTimeout that ran independent of the request).
+				//
+				// Interrupt contract: forkDetach fibers are NOT interrupted
+				// by the caller scope closing. They only terminate via
+				// explicit interruption (we don't hold the fiber handle),
+				// via runtime shutdown (ManagedRuntime.dispose), or by
+				// running to completion. For a 10s bounded delay, "run
+				// to completion" is the expected path.
 				yield* Effect.forkDetach(
 					Effect.delay(
 						Effect.gen(function* () {

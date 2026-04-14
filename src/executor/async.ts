@@ -33,6 +33,31 @@ import { PiEventBus } from "../services/PiEventBus.ts";
 import { PiSpawner } from "../services/PiSpawner.ts";
 import { runSingle, type RunSingleAgent, type RunSingleOptions } from "./single.ts";
 
+/**
+ * Write-side wrapper for the detached-daemon fs ops.
+ *
+ * The daemon fiber runs after the caller scope has returned — if disk
+ * fills or a permission error hits a status.json or result-file write
+ * there is no return-channel to surface it. Fail-closed is not an
+ * option (we can't block the caller), but a silent swallow loses all
+ * observability. Compromise: log the failure at Warn via Effect.log
+ * and continue. Operators can tail the log stream to diagnose.
+ *
+ * Still returns void (never) so the caller remains free of the
+ * FsWriteError channel, matching the runAsyncSingle contract.
+ */
+function logWriteFailure<A>(
+	what: string,
+	effect: Effect.Effect<A, FsWriteError>,
+): Effect.Effect<void> {
+	return effect.pipe(
+		Effect.asVoid,
+		Effect.catchTag("FsWriteError", (err) =>
+			Effect.logWarning(`async daemon write failed [${what}] at ${err.path}`, err.cause),
+		),
+	);
+}
+
 export interface RunAsyncSingleInput {
 	readonly agent: RunSingleAgent;
 	readonly task: string;
@@ -117,9 +142,10 @@ export const runAsyncSingle = (
 					startedAt,
 					lastUpdate: Date.now(),
 				}).pipe(Effect.orDie);
-				yield* fsApi
-					.write(path.join(asyncDir, "status.json"), JSON.stringify(runningStatus, null, 2))
-					.pipe(Effect.ignore);
+				yield* logWriteFailure(
+					"async status.json (running)",
+					fsApi.write(path.join(asyncDir, "status.json"), JSON.stringify(runningStatus, null, 2)),
+				);
 
 				const exit = yield* Effect.exit(
 					runSingle(input, options),
@@ -134,9 +160,10 @@ export const runAsyncSingle = (
 					endedAt: Date.now(),
 					lastUpdate: Date.now(),
 				}).pipe(Effect.orDie);
-				yield* fsApi
-					.write(path.join(asyncDir, "status.json"), JSON.stringify(finalStatus, null, 2))
-					.pipe(Effect.ignore);
+				yield* logWriteFailure(
+					"async status.json (final)",
+					fsApi.write(path.join(asyncDir, "status.json"), JSON.stringify(finalStatus, null, 2)),
+				);
 
 				// Result file: ResultWatcher picks it up and publishes
 				// subagent:complete.
@@ -147,12 +174,13 @@ export const runAsyncSingle = (
 					timestamp: Date.now(),
 					asyncDir,
 				};
-				yield* fsApi
-					.write(
+				yield* logWriteFailure(
+					"async result file",
+					fsApi.write(
 						path.join(resultsDir, `${input.runId}.json`),
 						JSON.stringify(resultPayload, null, 2),
-					)
-					.pipe(Effect.ignore);
+					),
+				);
 			}),
 		);
 

@@ -99,11 +99,35 @@ export const runChain = (
 	Effect.gen(function* () {
 		const templates = resolveChainTemplates(input.steps);
 		const agents = input.agents;
-		const findAgent = (name: string): RunSingleAgent & MinimalAgentConfig => {
-			const found = agents.find((a) => a.name === name);
-			if (!found) throw new Error(`Unknown agent: ${name}`);
-			return found;
-		};
+
+		// Pre-validate every agent name referenced by the chain so the
+		// pure helpers (findAgent, resolveParallelBehaviors) can't throw
+		// past the Effect runtime as a defect. Any unknown agent becomes
+		// a typed ChainStepFailed rooted at the first step that needs it.
+		for (let i = 0; i < input.steps.length; i++) {
+			const step = input.steps[i];
+			if (!step) continue;
+			const referenced = isParallelStep(step)
+				? step.parallel.map((t) => t.agent)
+				: [step.agent];
+			for (const name of referenced) {
+				if (!agents.some((a) => a.name === name)) {
+					return yield* Effect.fail(
+						new ChainStepFailed({
+							stepIndex: i,
+							agent: name,
+							cause: `Unknown agent: ${name}`,
+						}),
+					);
+				}
+			}
+		}
+
+		// Safe accessor: pre-validation above guarantees the agent exists.
+		// findAgent throws only if someone mutates `agents` mid-run,
+		// which is contractually out of scope — document with `as` cast.
+		const findAgent = (name: string): RunSingleAgent & MinimalAgentConfig =>
+			agents.find((a) => a.name === name) as RunSingleAgent & MinimalAgentConfig;
 
 		const chainAgents: string[] = [];
 		const allResults: SingleResult[] = [];

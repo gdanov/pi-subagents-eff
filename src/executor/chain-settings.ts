@@ -206,7 +206,13 @@ export function resolveParallelBehaviors(
 ): ReadonlyArray<ResolvedStepBehavior> {
 	return tasks.map((task, taskIndex) => {
 		const config = agentConfigs.find((a) => a.name === task.agent);
-		if (!config) throw new Error(`Unknown agent: ${task.agent}`);
+		// Precondition: the caller (executor/chain.ts:runChain) pre-
+		// validates every referenced agent before this helper runs and
+		// emits a typed ChainStepFailed for unknown names. This throw
+		// only fires if a direct caller bypasses that validation — it
+		// becomes a programming error, surfaced as a fiber defect, not
+		// a path through the Effect error channel.
+		if (!config) throw new Error(`Unknown agent: ${task.agent} (caller must pre-validate)`);
 
 		const subdir = path.join(`parallel-${stepIndex}`, `${taskIndex}-${task.agent}`);
 
