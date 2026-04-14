@@ -15,7 +15,8 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { Context, Effect, Layer } from "effect";
-import type { ConfigParseError, FsReadError } from "../errors.ts";
+import type { ConfigParseError, FsReadError, FsWriteError } from "../errors.ts";
+import { parseChain, type ChainConfig, type ChainSource } from "../executor/chain-serializer.ts";
 import { FileSystem } from "./FileSystem.ts";
 
 // ============================================================================
@@ -177,6 +178,39 @@ export interface AgentDirectoryService {
 		dir: string,
 		source: AgentSource,
 	) => Effect.Effect<ReadonlyArray<AgentConfig>, FsReadError | ConfigParseError>;
+	/**
+	 * Discover all `.chain.md` files across the same scope set as
+	 * `discover`. Malformed files are skipped (matches legacy
+	 * agents.ts:483 silent-skip).
+	 */
+	readonly discoverChains: (
+		cwd: string,
+		scope: AgentScope,
+	) => Effect.Effect<ReadonlyArray<ChainConfig>, FsReadError | ConfigParseError>;
+	/**
+	 * Resolve the on-disk file path for a new agent in the given
+	 * scope. Project scope requires a `cwd` that lives under a
+	 * project-root marker (`.pi/` or `.agents/`); fails with a clear
+	 * message otherwise.
+	 */
+	readonly resolveAgentPath: (
+		input: { readonly cwd: string; readonly scope: "user" | "project"; readonly name: string },
+	) => Effect.Effect<string, FsWriteError>;
+	readonly resolveChainPath: (
+		input: { readonly cwd: string; readonly scope: "user" | "project"; readonly name: string },
+	) => Effect.Effect<string, FsWriteError>;
+	/** Write an agent .md file. Caller passes the serialized contents. */
+	readonly writeAgent: (
+		filePath: string,
+		serialized: string,
+	) => Effect.Effect<void, FsWriteError>;
+	/** Write a chain .chain.md file. */
+	readonly writeChain: (
+		filePath: string,
+		serialized: string,
+	) => Effect.Effect<void, FsWriteError>;
+	/** Delete an agent or chain file. */
+	readonly remove: (filePath: string) => Effect.Effect<void, FsWriteError>;
 }
 
 export class AgentDirectory extends Context.Service<AgentDirectory, AgentDirectoryService>()(
@@ -283,7 +317,119 @@ export const AgentDirectoryLive = Layer.effect(AgentDirectory)(
 				return [...userOld, ...userNew, ...project];
 			});
 
-		return AgentDirectory.of({ discover, discoverIn });
+		// --------------------------------------------------------------
+		// Chain discovery
+		// --------------------------------------------------------------
+
+		const discoverChainsIn = (
+			dir: string,
+			source: ChainSource,
+		): Effect.Effect<ReadonlyArray<ChainConfig>, FsReadError | ConfigParseError> =>
+			Effect.gen(function* () {
+				const exists = yield* fsApi.exists(dir);
+				if (!exists) return [] as ReadonlyArray<ChainConfig>;
+				const entries = yield* fsApi.readDir(dir).pipe(
+					Effect.catchTag("FsNotFound", () => Effect.succeed<ReadonlyArray<string>>([])),
+				);
+				const chainFiles = entries.filter((e) => e.endsWith(".chain.md"));
+				const results: ChainConfig[] = [];
+				for (const file of chainFiles) {
+					const filePath = path.join(dir, file);
+					const content = yield* fsApi.read(filePath).pipe(
+						Effect.catchTag("FsNotFound", () => Effect.succeed("")),
+						Effect.catchTag("FsReadError", () => Effect.succeed("")),
+					);
+					if (!content) continue;
+					// parseChain throws on malformed frontmatter; legacy
+					// behavior is silent-skip, so wrap and discard.
+					const parsed = yield* Effect.try({
+						try: () => parseChain(content, source, filePath),
+						catch: () => null as ChainConfig | null,
+					}).pipe(Effect.orElseSucceed(() => null as ChainConfig | null));
+					if (parsed) results.push(parsed);
+				}
+				return results;
+			});
+
+		const discoverChains = (
+			cwd: string,
+			scope: AgentScope,
+		): Effect.Effect<ReadonlyArray<ChainConfig>, FsReadError | ConfigParseError> =>
+			Effect.gen(function* () {
+				const wantUser = scope === "user" || scope === "both";
+				const wantProject = scope === "project" || scope === "both";
+				const userOld = wantUser
+					? yield* discoverChainsIn(USER_AGENTS_DIR_OLD, "user")
+					: ([] as ReadonlyArray<ChainConfig>);
+				const userNew = wantUser
+					? yield* discoverChainsIn(USER_AGENTS_DIR_NEW, "user")
+					: ([] as ReadonlyArray<ChainConfig>);
+				const projectDir = wantProject
+					? yield* findNearestProjectAgentsDir(cwd, fsApi)
+					: null;
+				const project = projectDir
+					? yield* discoverChainsIn(projectDir, "project")
+					: ([] as ReadonlyArray<ChainConfig>);
+				return [...userOld, ...userNew, ...project];
+			});
+
+		// --------------------------------------------------------------
+		// Path resolution + writes
+		// --------------------------------------------------------------
+
+		const resolveDirForScope = (
+			input: { readonly cwd: string; readonly scope: "user" | "project" },
+		): Effect.Effect<string, FsWriteError> =>
+			Effect.gen(function* () {
+				if (input.scope === "user") {
+					// Prefer the new ~/.agents location when it already
+					// exists; otherwise legacy ~/.pi/agent/agents.
+					const newExists = yield* fsApi.isDirectory(USER_AGENTS_DIR_NEW);
+					return newExists ? USER_AGENTS_DIR_NEW : USER_AGENTS_DIR_OLD;
+				}
+				const projectDir = yield* findNearestProjectAgentsDir(input.cwd, fsApi);
+				if (projectDir) return projectDir;
+				// No project root: synthesize one under cwd/.pi/agents
+				// to match legacy agent-management.ts behavior.
+				return path.join(input.cwd, ".pi", "agents");
+			});
+
+		const resolveAgentPath = (
+			input: { readonly cwd: string; readonly scope: "user" | "project"; readonly name: string },
+		) =>
+			Effect.gen(function* () {
+				const dir = yield* resolveDirForScope(input);
+				return path.join(dir, `${input.name}.md`);
+			});
+
+		const resolveChainPath = (
+			input: { readonly cwd: string; readonly scope: "user" | "project"; readonly name: string },
+		) =>
+			Effect.gen(function* () {
+				const dir = yield* resolveDirForScope(input);
+				return path.join(dir, `${input.name}.chain.md`);
+			});
+
+		const writeAgent = (filePath: string, serialized: string) =>
+			Effect.gen(function* () {
+				yield* fsApi.mkdir(path.dirname(filePath));
+				yield* fsApi.write(filePath, serialized);
+			});
+
+		const writeChain = writeAgent; // same shape; semantically distinct method name keeps callsites readable
+
+		const remove = (filePath: string) => fsApi.rm(filePath, { force: true });
+
+		return AgentDirectory.of({
+			discover,
+			discoverIn,
+			discoverChains,
+			resolveAgentPath,
+			resolveChainPath,
+			writeAgent,
+			writeChain,
+			remove,
+		});
 	}),
 );
 
