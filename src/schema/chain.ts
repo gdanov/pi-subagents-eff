@@ -101,13 +101,27 @@ export const ParallelStepSchema = Schema.Struct({
 export type ParallelStep = typeof ParallelStepSchema.Type;
 
 // ============================================================================
-// ChainItem — sequential OR parallel step
+// TextStep — static text passed directly as {previous} to the next step
 // ============================================================================
 
-export const ChainItemSchema = Schema.Union([SequentialStepSchema, ParallelStepSchema]).annotate({
+export const TextStepSchema = Schema.Struct({
+	text: Schema.String,
+}).annotate({ identifier: "TextStep" });
+
+export type TextStep = typeof TextStepSchema.Type;
+
+// ============================================================================
+// ChainItem — sequential OR parallel OR text step
+// ============================================================================
+
+export const ChainItemSchema = Schema.Union([
+	SequentialStepSchema,
+	ParallelStepSchema,
+	TextStepSchema,
+]).annotate({
 	identifier: "ChainItem",
 	description:
-		"Chain step: either {agent, task?, ...} for sequential or {parallel: [...]} for concurrent execution",
+		"Chain step: {agent, task?, ...} for sequential, {parallel: [...]} for concurrent, or {text: string} for static text",
 });
 
 export type ChainItem = typeof ChainItemSchema.Type;

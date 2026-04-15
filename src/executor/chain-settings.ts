@@ -47,7 +47,11 @@ export interface ParallelStep {
 	readonly worktree?: boolean;
 }
 
-export type ChainStep = SequentialStep | ParallelStep;
+export interface TextStep {
+	readonly text: string;
+}
+
+export type ChainStep = SequentialStep | ParallelStep | TextStep;
 
 export interface MinimalAgentConfig {
 	readonly name: string;
@@ -66,8 +70,13 @@ export function isParallelStep(step: ChainStep): step is ParallelStep {
 	return "parallel" in step && Array.isArray((step as ParallelStep).parallel);
 }
 
+export function isTextStep(step: ChainStep): step is TextStep {
+	return "text" in step && typeof (step as TextStep).text === "string";
+}
+
 export function getStepAgents(step: ChainStep): ReadonlyArray<string> {
 	if (isParallelStep(step)) return step.parallel.map((t) => t.agent);
+	if (isTextStep(step)) return [];
 	return [step.agent];
 }
 
@@ -116,6 +125,7 @@ export type ResolvedTemplates = ReadonlyArray<string | ReadonlyArray<string>>;
  */
 export function resolveChainTemplates(steps: ReadonlyArray<ChainStep>): ResolvedTemplates {
 	return steps.map((step, i) => {
+		if (isTextStep(step)) return "";
 		if (isParallelStep(step)) {
 			return step.parallel.map((task) => task.task ?? "{previous}");
 		}

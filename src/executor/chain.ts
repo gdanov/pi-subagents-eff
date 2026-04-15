@@ -48,6 +48,7 @@ type ChainServices = ArtifactStore | FileSystem | ModelResolver | PiSpawner;
 import {
 	buildChainInstructions,
 	isParallelStep,
+	isTextStep,
 	resolveChainTemplates,
 	resolveParallelBehaviors,
 	resolveStepBehavior,
@@ -109,6 +110,8 @@ export const runChain = (
 			if (!step) continue;
 			const referenced = isParallelStep(step)
 				? step.parallel.map((t) => t.agent)
+				: isTextStep(step)
+				? []
 				: [step.agent];
 			for (const name of referenced) {
 				if (!agents.some((a) => a.name === name)) {
@@ -139,6 +142,19 @@ export const runChain = (
 			const step = input.steps[i];
 			if (!step) continue;
 			const template = templates[i];
+
+			if (isTextStep(step)) {
+				previous = step.text;
+				allResults.push({
+					agent: "",
+					task: "",
+					exitCode: 0,
+					messages: [],
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+					finalOutput: step.text,
+				});
+				continue;
+			}
 
 			if (isParallelStep(step)) {
 				const parallelTemplates = template as ReadonlyArray<string>;
