@@ -24,13 +24,13 @@ Branch: `main`. **16 commits ahead of origin/main**, never pushed.
 | 8 — Phase 5-8 review fixes (after pi agent review) | `ff00ba0` | 314 |
 | 9 — TUI Render + TextEditor pure formatters | `8a097e6` | — |
 | 10 — Subprocess runner `src/runner/main.ts` | `224cd4d` | — |
-| 11 — TextStep chain step type | `d2d3708` | — |
+| 11 — TextStep + pi-adapter (Executor, runtime, tool-definition, event-hub, update-queue, typebox-bridge) + TUI wiring | `5bce6e8` | — |
 
 ## Remaining phases
 
 | Phase | Scope | Estimated |
 |---|---|---|
-| **11** | `TextStep` done. Remaining: `Executor.ts`, `pi-adapter/` stubs (`runtime.ts`, `tool-definition.ts`, `event-hub.ts`, `update-queue.ts`, `typebox-bridge.ts`), `src/index.ts` entry swap. TUI `AgentManager.ts` + `ChainClarify.ts` wired via `Effect.tryPromise`. | Medium-large |
+| **11** | TUI wiring + `src/index.ts` entry swap done. Remaining: `SlashBridge` Pi wiring, `Notifier`, `src/index.ts` extension registration (pi.extensions flip). | Medium |
 | **12** | Delete legacy flat `.ts` files at repo root. | Trivial |
 
 ## Deferred / TODO items
@@ -79,17 +79,17 @@ src/
   executor/                   composes services
     single.ts, chain.ts, parallel.ts, async.ts, management.ts
     pi-args.ts, chain-settings.ts, chain-serializer.ts, agent-serializer.ts
-    Executor.ts               EMPTY STUB — Phase 11
+    Executor.ts               ✅ done
     single-output.ts          EMPTY STUB — follow-up
-  pi-adapter/                 EMPTY STUBS — Phase 11
+  pi-adapter/                 ✅ done (runtime, tool-definition, event-hub, update-queue, typebox-bridge)
   tui/
-    AgentManager.ts            stub (wired in Phase 11)
-    ChainClarify.ts           stub (wired in Phase 11)
+    AgentManager.ts            ✅ done
+    ChainClarify.ts           ✅ done
     Render.ts                 ✅ done
     TextEditor.ts             ✅ done
   runner/
     main.ts                   ✅ done (Phase 10)
-  index.ts                    EMPTY STUB — Phase 11 entry swap
+  index.ts                    stub — Pi extension registration (Phase 11)
 
 test/
   unit/           legacy tests (don't touch until Phase 12 delete)

@@ -1,12 +1,33 @@
-/**
- * onUpdate-callback bridge.
- *
- * The Pi tool framework hands the executor a Promise-returning
- * `onUpdate(result)` callback. Inside Effect, we offer updates to a
- * Queue; a drain fiber takes from the Queue and calls the original
- * callback. Decouples Effect's structured concurrency from Pi's
- * Promise-based UI loop.
- *
- * Implementation lands at Phase 11 (entry swap).
- */
-export {};
+import { Effect } from "effect";
+import type { AgentProgress } from "../domain/progress.ts";
+import type { SingleResult } from "../domain/results.ts";
+
+export interface UpdateQueueOptions {
+	readonly onUpdate: (partial: { readonly result: SingleResult; readonly progress: AgentProgress }) => void;
+}
+
+export function makeUpdateQueue(options: UpdateQueueOptions) {
+	const pending: Array<{ readonly result: SingleResult; readonly progress: AgentProgress }> = [];
+	let draining = false;
+
+	const processNext = () => {
+		while (pending.length > 0) {
+			const item = pending.shift();
+			if (item) options.onUpdate(item);
+		}
+		draining = false;
+	};
+
+	return {
+		offer: (partial: { readonly result: SingleResult; readonly progress: AgentProgress }) => {
+			pending.push(partial);
+			if (!draining) {
+				draining = true;
+				processNext();
+			}
+		},
+		run: Effect.gen(function* () {
+			processNext();
+		}),
+	};
+}
