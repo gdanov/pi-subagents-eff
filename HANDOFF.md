@@ -24,28 +24,13 @@ Branch: `main`. **12 commits ahead of origin/main**, never pushed.
 | 8 — Phase 5-8 review fixes (after pi agent review) | `ff00ba0` | 314 |
 | 9 — TUI Render + TextEditor pure formatters | `8a097e6` | — |
 | 10 — Subprocess runner `src/runner/main.ts` | `224cd4d` | — |
-
-Totals right now: **188 legacy + 314 new = 502 tests green**, `tsc --noEmit` clean.
-
-## Verify state before changing anything
-
-```bash
-cd /Users/gdanov/work/playground/pi-subagents-eff
-git log --oneline -5 && git status   # expect HEAD=224cd4d, clean
-npm run typecheck                    # expect clean
-npm run test:unit        2>&1 | tail -5   # expect 188 pass
-npm run test:unit-effect 2>&1 | tail -5   # expect 314 pass
-```
-
-If any of these don't match, stop and investigate before editing.
+| 11 — TextStep chain step type | `d2d3708` | — |
 
 ## Remaining phases
 
 | Phase | Scope | Estimated |
 |---|---|---|
-| **9** | TUI `AgentManager.ts` + `ChainClarify.ts` — deferred to Phase 11 (entry swap wires them). `Render.ts` + `TextEditor.ts` done. | Medium |
-| **10** | **DONE** — `src/runner/main.ts` implemented. Tests needed. | Small-medium |
-| **11** | **Entry swap milestone.** `src/pi-adapter/runtime.ts` (Layer composition + ManagedRuntime), `tool-definition.ts` (`effectTool` → Pi ToolDefinition), `event-hub.ts` (pi.events ↔ Hub), `update-queue.ts` (onUpdate callback bridge), `typebox-bridge.ts` (Effect Schema → JSONSchema with anyOf coercion). Flip `package.json:pi.extensions` to `src/index.ts`. | Medium-large |
+| **11** | `TextStep` done. Remaining: `Executor.ts`, `pi-adapter/` stubs (`runtime.ts`, `tool-definition.ts`, `event-hub.ts`, `update-queue.ts`, `typebox-bridge.ts`), `src/index.ts` entry swap. TUI `AgentManager.ts` + `ChainClarify.ts` wired via `Effect.tryPromise`. | Medium-large |
 | **12** | Delete legacy flat `.ts` files at repo root. | Trivial |
 
 ## Deferred / TODO items
