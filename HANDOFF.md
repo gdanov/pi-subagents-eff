@@ -8,7 +8,7 @@ Primary reference: `/Users/gdanov/.claude/plans/buzzing-singing-moore.md`. It is
 
 ## State at handoff
 
-Branch: `main`. **12 commits ahead of origin/main**, never pushed.
+Branch: `main`. **16 commits ahead of origin/main**, never pushed.
 
 | Phase | Commit | New tests |
 |---|---|---|
