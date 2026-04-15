@@ -24,13 +24,14 @@ Branch: `main`. **16 commits ahead of origin/main**, never pushed.
 | 8 — Phase 5-8 review fixes (after pi agent review) | `ff00ba0` | 314 |
 | 9 — TUI Render + TextEditor pure formatters | `8a097e6` | — |
 | 10 — Subprocess runner `src/runner/main.ts` | `224cd4d` | — |
-| 11 — TextStep + pi-adapter (Executor, runtime, tool-definition, event-hub, update-queue, typebox-bridge) + TUI wiring | `5bce6e8` | — |
+| 11 — TextStep + pi-adapter (Executor, runtime, tool-definition, event-hub, update-queue, typebox-bridge) + TUI wiring | `67e545a` | — |
+| 11 — index.ts extension registration + SlashBridge Pi wiring | `b079df5` | — |
 
 ## Remaining phases
 
 | Phase | Scope | Estimated |
 |---|---|---|
-| **11** | TUI wiring + `src/index.ts` entry swap done. Remaining: `SlashBridge` Pi wiring, `Notifier`, `src/index.ts` extension registration (pi.extensions flip). | Medium |
+| **11** | All core pieces done. `Notifier` needs Pi registration check; `package.json:pi.extensions` flip pending Phase 11 final verification. | Small |
 | **12** | Delete legacy flat `.ts` files at repo root. | Trivial |
 
 ## Deferred / TODO items
@@ -89,7 +90,7 @@ src/
     TextEditor.ts             ✅ done
   runner/
     main.ts                   ✅ done (Phase 10)
-  index.ts                    stub — Pi extension registration (Phase 11)
+  index.ts                    ✅ done (Pi extension registration + SlashBridge wiring)
 
 test/
   unit/           legacy tests (don't touch until Phase 12 delete)
