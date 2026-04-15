@@ -3,20 +3,20 @@ import type { AgentToolResult, AgentToolUpdateCallback } from "@mariozechner/pi-
 import type { Schema } from "effect";
 import type { ExecutorOutput } from "../executor/Executor.ts";
 
-export interface EffectToolOptions<TParams> {
+export interface EffectToolOptions<TParams, TDetails> {
 	readonly name: string;
 	readonly label: string;
 	readonly description: string;
 	readonly parameters: Schema.Schema<TParams>;
 	readonly execute: (
 		params: TParams,
-		onUpdate: AgentToolUpdateCallback<ExecutorOutput> | undefined,
+		onUpdate: AgentToolUpdateCallback<TDetails> | undefined,
 		ctx: ExtensionContext,
-	) => Promise<AgentToolResult<ExecutorOutput>>;
+	) => Promise<AgentToolResult<TDetails>>;
 }
 
-export function effectTool<TParams>(
-	options: EffectToolOptions<TParams>,
+export function effectTool<TParams, TDetails>(
+	options: EffectToolOptions<TParams, TDetails>,
 ): {
 	name: string;
 	label: string;
@@ -26,9 +26,9 @@ export function effectTool<TParams>(
 		toolCallId: string,
 		params: TParams,
 		signal: AbortSignal | undefined,
-		onUpdate: AgentToolUpdateCallback<ExecutorOutput> | undefined,
+		onUpdate: AgentToolUpdateCallback<TDetails> | undefined,
 		ctx: ExtensionContext,
-	) => Promise<AgentToolResult<ExecutorOutput>>;
+	) => Promise<AgentToolResult<TDetails>>;
 } {
 	return {
 		name: options.name,
@@ -39,9 +39,9 @@ export function effectTool<TParams>(
 			_toolCallId: string,
 			params: TParams,
 			_signal: AbortSignal | undefined,
-			onUpdate: AgentToolUpdateCallback<ExecutorOutput> | undefined,
+			onUpdate: AgentToolUpdateCallback<TDetails> | undefined,
 			_ctx: ExtensionContext,
-		): Promise<AgentToolResult<ExecutorOutput>> => {
+		): Promise<AgentToolResult<TDetails>> => {
 			return options.execute(params, onUpdate, _ctx);
 		},
 	};
