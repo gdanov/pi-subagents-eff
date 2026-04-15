@@ -8,7 +8,7 @@ Primary reference: `/Users/gdanov/.claude/plans/buzzing-singing-moore.md`. It is
 
 ## State at handoff
 
-Branch: `main`. **10 commits ahead of origin/main**, never pushed.
+Branch: `main`. **12 commits ahead of origin/main**, never pushed.
 
 | Phase | Commit | New tests |
 |---|---|---|
@@ -21,7 +21,9 @@ Branch: `main`. **10 commits ahead of origin/main**, never pushed.
 | 6 — executor/chain.ts + parallel.ts + chain-settings | `d359fc7` | 244 |
 | 7 — PiEventBus, ResultWatcher, AsyncJobTracker, executor/async.ts | `dd9302f` | 263 |
 | 8 — SlashLiveState, SkillResolver (no-op), IntercomBridge, ChainSerializer, AgentDirectory CRUD, management dispatcher | `fff721e` | 310 |
-| 8 — Phase 5-8 review fixes (after pi agent review) | `ff00ba0` | **314** |
+| 8 — Phase 5-8 review fixes (after pi agent review) | `ff00ba0` | 314 |
+| 9 — TUI Render + TextEditor pure formatters | `8a097e6` | — |
+| 10 — Subprocess runner `src/runner/main.ts` | `224cd4d` | — |
 
 Totals right now: **188 legacy + 314 new = 502 tests green**, `tsc --noEmit` clean.
 
@@ -29,7 +31,7 @@ Totals right now: **188 legacy + 314 new = 502 tests green**, `tsc --noEmit` cle
 
 ```bash
 cd /Users/gdanov/work/playground/pi-subagents-eff
-git log --oneline -5 && git status   # expect HEAD=ff00ba0, clean
+git log --oneline -5 && git status   # expect HEAD=224cd4d, clean
 npm run typecheck                    # expect clean
 npm run test:unit        2>&1 | tail -5   # expect 188 pass
 npm run test:unit-effect 2>&1 | tail -5   # expect 314 pass
@@ -41,10 +43,24 @@ If any of these don't match, stop and investigate before editing.
 
 | Phase | Scope | Estimated |
 |---|---|---|
-| **9** | TUI adapters (`tui/AgentManager.ts`, `tui/ChainClarify.ts`, `tui/Render.ts`, `tui/TextEditor.ts`). Per plan: kept imperative (pi-tui callback-driven). Thin Promise-boundary wrappers `Effect.tryPromise(() => showDialog(...))`. ~1 commit. | Medium |
-| **10** | Subprocess runner (`src/runner/main.ts`) replacing `subagent-runner.ts`. Has its own `ManagedRuntime` with a smaller layer — **must NOT include `PiEventBusLive` or `NotifierLive`** (no parent `pi.events`). | Small-medium |
+| **9** | TUI `AgentManager.ts` + `ChainClarify.ts` — deferred to Phase 11 (entry swap wires them). `Render.ts` + `TextEditor.ts` done. | Medium |
+| **10** | **DONE** — `src/runner/main.ts` implemented. Tests needed. | Small-medium |
 | **11** | **Entry swap milestone.** `src/pi-adapter/runtime.ts` (Layer composition + ManagedRuntime), `tool-definition.ts` (`effectTool` → Pi ToolDefinition), `event-hub.ts` (pi.events ↔ Hub), `update-queue.ts` (onUpdate callback bridge), `typebox-bridge.ts` (Effect Schema → JSONSchema with anyOf coercion). Flip `package.json:pi.extensions` to `src/index.ts`. | Medium-large |
 | **12** | Delete legacy flat `.ts` files at repo root. | Trivial |
+
+## Deferred / TODO items
+
+- **Runner tests** — `test/unit-effect/runner.test.ts` covering sequential, parallel, model-fallback, status/event JSON writes.
+- **Model-fallback retry loop** — wraps `runSingle` in a candidate iteration using `ModelResolver.buildCandidates` + `isRetryableFailure`. Small wrapper.
+- **Intercom detach race in `runSingle`** — `Effect.race(piProcessStream, intercomDetachSignal)` producing `PiDetachedForIntercom`. Needs `IntercomBridge` wired (already exists, just not connected).
+- **Single-output file writing** (`single-output.ts`) — small helper to resolve + persist the agent's final output to a caller-supplied path.
+- **Share-to-gist session upload** — uses the already-implemented `GhSpawner`.
+- **Worktree orchestration** — `createWorktrees` / `diffWorktrees` / setup-hooks on top of `GitSpawner`. Consumed by `executor/parallel.ts` when `worktree: true`.
+- **Builtin agent overrides** — `agentOverrides` section in `~/.pi/agent/settings.json`. Fairly involved (legacy `agents.ts:218-347`).
+- **Full skill resolver** — replace `SkillResolverNoop` with the fs-walking implementation. ~200 LOC. Has a contract-lock test that will need updating.
+- **SlashBridge Pi wiring + prompt-template bridge + slash-commands dispatcher** — all Phase 11, Pi-API-coupled.
+- **modelRegistry validation warnings** in management create/update — small.
+- **Chain-step reference warnings on delete/rename** — small.
 
 ## Hard-won Effect 4.x API gotchas (not in the plan)
 
@@ -78,12 +94,17 @@ src/
   executor/                   composes services
     single.ts, chain.ts, parallel.ts, async.ts, management.ts
     pi-args.ts, chain-settings.ts, chain-serializer.ts, agent-serializer.ts
+    Executor.ts               EMPTY STUB — Phase 11
+    single-output.ts          EMPTY STUB — follow-up
   pi-adapter/                 EMPTY STUBS — Phase 11
-  tui/                        EMPTY STUBS — Phase 9
-  runner/main.ts              EMPTY STUB — Phase 10
+  tui/
+    AgentManager.ts            stub (wired in Phase 11)
+    ChainClarify.ts           stub (wired in Phase 11)
+    Render.ts                 ✅ done
+    TextEditor.ts             ✅ done
+  runner/
+    main.ts                   ✅ done (Phase 10)
   index.ts                    EMPTY STUB — Phase 11 entry swap
-  executor/Executor.ts        EMPTY STUB — Phase 11
-  executor/single-output.ts   EMPTY STUB — small follow-up
 
 test/
   unit/           legacy tests (don't touch until Phase 12 delete)
@@ -99,23 +120,15 @@ test/
 - **On-disk formats are contract** — users check `.chain.md` into repos. `status.json` / `metadata.json` / `run-history.jsonl` shapes must stay byte-compatible. If you change on-disk shape, add a golden-artifact test.
 - **TypeScript rules** in `~/.claude/rules/typescript.md` (except `ServiceMap.Service` — use `Context.Service`). No `try/catch` outside `Effect.try`. No `async/await`. No `Promise.all`. No `any`. Classes only for `Data.TaggedError` + `Context.Service`.
 
-## Deferred items tracked across phases (not forgotten, intentionally out of scope earlier)
+## Phase 11 pointers (next up)
 
-Each has a comment at its would-be site plus tracked TaskCreate history. Do NOT fold into Phase 9-10; leave them for Phase 11 unless explicitly asked:
+The entry swap is the major milestone. The `src/pi-adapter/` stubs (`runtime.ts`, `tool-definition.ts`, `event-hub.ts`, `update-queue.ts`, `typebox-bridge.ts`) need implementation plus `src/index.ts` as the new entry point. `src/executor/Executor.ts` also needs implementation to route between single/chain/parallel/async paths.
 
-- **Model-fallback retry loop** — wraps `runSingle` in a candidate iteration using `ModelResolver.buildCandidates` + `isRetryableFailure`. Small wrapper.
-- **Intercom detach race in `runSingle`** — `Effect.race(piProcessStream, intercomDetachSignal)` producing `PiDetachedForIntercom`. Needs `IntercomBridge` wired (already exists, just not connected).
-- **Single-output file writing** (`single-output.ts`) — small helper to resolve + persist the agent's final output to a caller-supplied path.
-- **Share-to-gist session upload** — uses the already-implemented `GhSpawner`.
-- **Worktree orchestration** — `createWorktrees` / `diffWorktrees` / setup-hooks on top of `GitSpawner`. Consumed by `executor/parallel.ts` when `worktree: true`.
-- **Builtin agent overrides** — `agentOverrides` section in `~/.pi/agent/settings.json`. Fairly involved (legacy `agents.ts:218-347`).
-- **Full skill resolver** — replace `SkillResolverNoop` with the fs-walking implementation. ~200 LOC. Has a contract-lock test that will need updating.
-- **ChainClarify TUI** — Phase 9, kept imperative.
-- **SlashBridge Pi wiring + prompt-template bridge + slash-commands dispatcher** — all Phase 11, Pi-API-coupled.
-- **modelRegistry validation warnings** in management create/update — small.
-- **Chain-step reference warnings on delete/rename** — small.
-
-## Phase 9 pointers (next up)
+Key wiring:
+- `runtime.ts` composes all Live layers into one `ManagedRuntime`
+- `tool-definition.ts` bridges Effect Schema → Pi ToolDefinition + typebox anyOf coercion
+- `event-hub.ts` maps `pi.events` ↔ Hub for inter-comms
+- TUI files (`AgentManager.ts`, `ChainClarify.ts`) get wired in via `runtime.runPromise` calls
 
 The plan section `7. TUI integration strategy` says: keep imperative, cross the Effect boundary only at entry/exit. For each legacy file:
 
